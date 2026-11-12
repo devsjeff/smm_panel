@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BANNED
+}
+
+enum OrderStatus {
+  PENDING // charged, waiting to be sent to the provider
+  PROCESSING // being sent to the provider right now
+  IN_PROGRESS // accepted by the provider
+  COMPLETED
+  PARTIAL // partly delivered, remainder refunded
+  CANCELED // canceled by provider/admin, fully refunded
+  FAILED // provider rejected it, fully refunded
+}
+
+enum TxType {
+  DEPOSIT
+  ORDER
+  REFUND
+  ADJUSTMENT
+}
+
+enum DepositStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  name         String
+  passwordHash String
+  role         Role       @default(USER)
+  status       UserStatus @default(ACTIVE)
+  balance      Decimal    @default(0) @db.Decimal(18, 5)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  orders       Order[]
+  transactions Transaction[]
+  deposits     DepositRequest[]
+}
+
+model Provider {
+  id            String    @id @default(cuid())
+  name          String    @unique
+  apiUrl        String
+  apiKeyEnc     String // AES-256-GCM, see src/lib/crypto.ts
+  isActive      Boolean   @default(true)
+  markupPercent Decimal?  @db.Decimal(8, 2) // overrides the global default
+  balance       Decimal?  @db.Decimal(18, 5)
+  currency      String?
+  lastSyncedAt  DateTime?
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  services Service[]
+  orders   Order[]
+}
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  sort     Int       @default(0)
+  isActive Boolean   @default(true)
+  services Service[]
+}
+
+model Service {
+  id                  Int      @id @default(autoincrement())
+  providerId          String
+  providerServiceId   String
+  categoryId          String
+  name                String
+  type                String   @default("Default")
+  providerRate        Decimal  @db.Decimal(18, 5) // provider cost per 1000
+  rate                Decimal  @db.Decimal(18, 5) // our price per 1000
+  customMarkupPercent Decimal? @db.Decimal(8, 2) // overrides provider/global markup
+  min                 Int
+  max                 Int
+  refill              Boolean  @default(false)
+  cancel              Boolean  @default(false)
+  isActive            Boolean  @default(true) // admin switch
+  providerAvailable   Boolean  @default(true) // false once the provider stops listing it
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  orders   Order[]
+
+  @@unique([providerId, providerServiceId])
+  @@index([categoryId])
+}
+
+model Order {
+  id              Int         @id @default(autoincrement())
+  userId          String
+  serviceId       Int
+  providerId      String
+  link            String
+  quantity        Int
+  charge          Decimal     @db.Decimal(18, 5) // what the customer paid
+  cost            Decimal     @db.Decimal(18, 5) // what the provider charges us (estimate)
+  refundedAmount  Decimal     @default(0) @db.Decimal(18, 5)
+  status          OrderStatus @default(PENDING)
+  providerOrderId String?
+  providerStatus  String?
+  startCount      Int?
+  remains         Int?
+  attempts        Int         @default(0)
+  needsReview     Boolean     @default(false) // dispatch outcome unknown, admin must decide
+  error           String?
+  lastSyncedAt    DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  service      Service       @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  provider     Provider      @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@index([userId, createdAt])
+  @@index([status, lastSyncedAt])
+  @@index([providerId, providerOrderId])
+}
+
+// Append-only wallet ledger. User.balance is always the sum of these.
+model Transaction {
+  id           String   @id @default(cuid())
+  userId       String
+  type         TxType
+  amount       Decimal  @db.Decimal(18, 5) // signed: negative = debit
+  balanceAfter Decimal  @db.Decimal(18, 5)
+  orderId      Int?
+  reference    String?
+  note         String?
+  createdAt    DateTime @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  // One charge and at most one refund per order: makes refunds idempotent at the DB level.
+  @@unique([orderId, type])
+  @@index([userId, createdAt])
+}
+
+model DepositRequest {
+  id         String        @id @default(cuid())
+  userId     String
+  amount     Decimal       @db.Decimal(18, 5)
+  method     String
+  reference  String
+  status     DepositStatus @default(PENDING)
+  adminNote  String?
+  createdAt  DateTime      @default(now())
+  reviewedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Setting {
+  key   String @id
+  value String
+}

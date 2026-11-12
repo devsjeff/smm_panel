@@ -1,0 +1,22 @@
+# Local Postgres + Redis. Not needed if you point .env at hosted ones.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: smm
+      POSTGRES_PASSWORD: smm
+      POSTGRES_DB: smm
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+volumes:
+  pgdata:
+  redisdata:
